@@ -1,0 +1,175 @@
+import bpy
+import numpy as np
+import mathutils
+
+def ReadPoints(path):
+    points = []
+    for line in open(path, "r"):
+        c_str = line.splitlines()
+        point = c_str[0].split(" ")
+        point = np.array(point).astype(float)
+        points.append(point)
+    return np.array(points)
+
+def SetPoints(points):
+    # 4 points make a bezier curve
+    # Order them by startpoint -> control 1 -> control 2 -> endpoint
+    c = np.zeros((4,4,3), dtype = np.float64)
+    count = 0
+    for i in range(0, points.shape[0], 4):
+        c[count, 0] = points[i]
+        c[count, 1] = points[i+1]
+        c[count, 2] = points[i+3]
+        c[count, 3] = points[i+2]
+        count += 1
+    return c[0], c[1], c[2], c[3]
+
+def CreateCurve(name='BezierCurve', points=np.zeros((4,3))):
+    curve_data = bpy.data.curves.new(name=name, type='CURVE')
+    curve_data.dimensions = '3D'
+    
+    curve = curve_data.splines.new('BEZIER')
+    knots = curve.bezier_points
+    knots.add(points.shape[0]-3)
+    
+    knots[0].co = points[0]
+    knots[0].handle_right = points[1]
+    knots[1].co = points[3]
+    knots[1].handle_left = points[2]
+    
+    curve_obj = bpy.data.objects.new(name=name, object_data=curve_data)
+    bpy.context.scene.collection.objects.link(curve_obj)
+    return curve_obj
+
+def CreateMeshSpline(name, vertices):
+    me = bpy.data.meshes.new(name=name)
+    
+    # make faces
+    # 3 faces
+    n = int(vertices.shape[0] / 2)
+    # i -> i+4 -> i+5 -> i+1
+    faces = []
+    for i in range(n-1):
+        indices = [i, i+n, i+n+1, i+1]
+        faces.append(indices)
+    
+    me.from_pydata(vertices, [], faces)
+    me.update()
+    me_obj = DisplayMesh(name, me)
+    return me_obj
+
+def CreateCoonsMeshObject(vertices):
+    me = bpy.data.meshes.new("CoonsPatchMesh")
+    
+    # make faces
+    n = int(np.sqrt(vertices.shape[0]))
+    # i -> i+4 -> i+5 -> i+1 for every inner face
+    squares = 0
+    faces=[]
+    for i in range (n * (n-1)):
+        if squares < n-1:
+            indices = [i, i+n, i+n+1, i+1]
+            faces.append(indices)
+            squares += 1
+            continue
+        squares = 0
+            
+    me.from_pydata(vertices, [], faces)
+    me.update()
+    # Add a color material to the coons patch surface
+    mymat = bpy.data.materials.new("CoonsPatchMaterial")
+    mymat.diffuse_color = [255./255., 80./255., 1./255., 1]
+    me.materials.append(mymat)
+    me_obj = DisplayMesh("CoonsPatchObject", me)
+    
+    return me_obj
+
+def CreateMeshSubtract(name, vertices):
+    me = bpy.data.meshes.new(name=name)
+    edges = [[0,1], [2,3], [4,5], [6,7]]
+    faces = [[0,1,2,3]]
+    me.from_pydata(vertices, [], faces)
+    me.update()
+    me_obj = DisplayMesh(name, me)
+    return me_obj
+
+def DisplayMesh(name, mesh_data):
+    me_obj = bpy.data.objects.new(name=name, object_data=mesh_data)
+    bpy.context.scene.collection.objects.link(me_obj)
+    return me_obj
+
+def BezierDeCasteljau(c, w):
+    # Casteljau algorithm to interpolate points on each bezier curve 
+    # using 2 endpoints and 2 handlepoints
+    n = len(c)
+    degree = n-1
+    points = np.zeros((n, 3, n))
+    points[:,:,0] = c
+
+    for i in range(n):
+        for j in range(degree-i):
+            points[j,:,i+1] = (1-w)*points[j,:,i] + w*points[j+1,:,i]
+
+    point = points[0,:,n-1]
+    return point
+
+def ConstructCoonsPatch(n, a, t, s, c1, c2, c3, c4):
+    # Interpolate the opposite curves to get a surface
+    # Using curve 1 and curve 2 vertices get first surface
+    Lc1c2 = (1-t*a)*c1[s] + t*a*c2[s]
+    # Using curve 3 and curve 4 vertices get second surface
+    Lc3c4 = (1-s*a)*c3[t] + s*a*c4[t]
+    
+    # Now to get the plane that passes through the corner points of curves
+    B = (1-s*a)*(1-t*a)*c1[0] + s*a*(1-t*a)*c1[n-1] + (1-s*a)*t*a*c2[0] + s*a*t*a*c2[n-1]
+    
+    # Bilinearly Blended Coons Patch
+    coons_patch = Lc1c2 + Lc3c4 - B
+    return coons_patch
+    
+filepath = "/Users/anuragparcha/Desktop/MPCS_FALL2022/VC/Lab/A3/A3-2-2/coons_patch_points.txt"
+points = ReadPoints(filepath)
+c1, c2, c3, c4 = SetPoints(points)
+bc1 = CreateCurve('B_Curve1', c1)
+bc2 = CreateCurve('B_Curve2', c2)
+bc3 = CreateCurve('B_Curve3', c3)
+bc4 = CreateCurve('B_Curve4', c4)
+
+c1_verts = np.array(mathutils.geometry.interpolate_bezier(c1[0], c1[1], c1[2], c1[3], 10))
+c2_verts = np.array(mathutils.geometry.interpolate_bezier(c2[0], c2[1], c2[2], c2[3], 10))
+c3_verts = np.array(mathutils.geometry.interpolate_bezier(c3[0], c3[1], c3[2], c3[3], 10))
+c4_verts = np.array(mathutils.geometry.interpolate_bezier(c4[0], c4[1], c4[2], c4[3], 10))
+verts1 = np.vstack((c1_verts, c2_verts))
+print(verts1.shape[0])
+me1 = CreateMeshSpline('SurfaceMesh1', verts1)
+verts2 = np.vstack((c3_verts, c4_verts))
+me2 = CreateMeshSpline('SurfaceMesh1', verts2)
+corner_verts = [c1[0], c1[3], c2[3], c2[0], c3[0], c3[3], c4[3], c4[0]]
+me3 = CreateMeshSubtract('SurfaceMesh3', corner_verts)
+
+# Use Decasteljau's algorithm
+n = 100
+a = 1./(n-1) 
+w = 0. # weight
+
+c1_verts = []
+c2_verts = []
+c3_verts = []
+c4_verts = []
+while w < 1 :
+    c1_verts.append(BezierDeCasteljau(c1, w))
+    c2_verts.append(BezierDeCasteljau(c2, w))
+    c3_verts.append(BezierDeCasteljau(c3, w))
+    c4_verts.append(BezierDeCasteljau(c4, w))
+    w += a
+
+
+verts = []
+for t in range (n):
+    for s in range (n):
+        patch_vertex = ConstructCoonsPatch(n, a, t, s, c1_verts, c2_verts, c3_verts, c4_verts)
+        verts.append(patch_vertex)
+
+verts = np.array(verts)
+# Render Coons Patch in the Scene
+Coons_Patch_Obj = CreateCoonsMeshObject(verts)
